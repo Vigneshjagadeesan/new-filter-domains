@@ -9,12 +9,10 @@ st.title("🎯 High-Authority Filtered Domains Dashboard")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-@st.cache_data
+@st.cache_data(max_entries=2, ttl=3600)
 def load_policy_data(prefix):
-    # Find all part files (e.g., POWER_no_dmarc_domains_part*.csv.gz)
     part_files = sorted(glob.glob(os.path.join(BASE_DIR, f"{prefix}*.csv.gz")))
     
-    # Fallback to single .csv or .csv.gz if parts are not present
     if not part_files:
         gz_single = os.path.join(BASE_DIR, f"{prefix}.csv.gz")
         csv_single = os.path.join(BASE_DIR, f"{prefix}.csv")
@@ -26,11 +24,27 @@ def load_policy_data(prefix):
     if not part_files:
         return None
         
-    df_list = [pd.read_csv(f) for f in part_files]
+    df_list = []
+    # Essential columns only to save RAM
+    use_cols = ['Domain', 'Extension', 'Referring_Domains', 'OpenPageRank_Score']
+    
+    for f in part_files:
+        try:
+            temp_df = pd.read_csv(f, usecols=lambda c: c in use_cols)
+            df_list.append(temp_df)
+        except Exception:
+            temp_df = pd.read_csv(f)
+            df_list.append(temp_df)
+            
     df = pd.concat(df_list, ignore_index=True)
     
-    df['Referring_Domains'] = pd.to_numeric(df['Referring_Domains'], errors='coerce').fillna(0).astype(int)
-    df['OpenPageRank_Score'] = pd.to_numeric(df['OpenPageRank_Score'], errors='coerce').fillna(0.0)
+    if 'Referring_Domains' in df.columns:
+        df['Referring_Domains'] = pd.to_numeric(df['Referring_Domains'], errors='coerce').fillna(0).astype('int32')
+    if 'OpenPageRank_Score' in df.columns:
+        df['OpenPageRank_Score'] = pd.to_numeric(df['OpenPageRank_Score'], errors='coerce').fillna(0.0).astype('float32')
+    if 'Extension' in df.columns:
+        df['Extension'] = df['Extension'].astype('category')
+        
     return df
 
 policies = {
@@ -70,7 +84,7 @@ if df is not None:
     ]
     selected_range = st.sidebar.selectbox("Select Count Range", range_options)
 
-    filtered_df = df.copy()
+    filtered_df = df
 
     if selected_range == "1 - 10":
         filtered_df = filtered_df[(filtered_df['Referring_Domains'] >= 1) & (filtered_df['Referring_Domains'] <= 10)]
@@ -98,7 +112,7 @@ if df is not None:
     if search_keyword:
         filtered_df = filtered_df[filtered_df['Domain'].astype(str).str.contains(search_keyword.lower(), na=False)]
 
-    # Sort Order
+    # 4. Sort Order
     sort_order = st.sidebar.radio("Sort Referring Domains", ["Low to High (Ascending)", "High to Low (Descending)"])
     if sort_order == "Low to High (Ascending)":
         filtered_df = filtered_df.sort_values(by="Referring_Domains", ascending=True)
@@ -111,7 +125,14 @@ if df is not None:
     col3.metric("Selected Range", selected_range)
 
     st.subheader(f"Results: {selected_policy}")
-    st.dataframe(filtered_df, use_container_width=True)
+    
+    # Render table (without deprecated container width flag)
+    # Showing first 5,000 rows in preview to prevent browser crash, full data downloadable below
+    preview_df = filtered_df.head(5000)
+    if len(filtered_df) > 5000:
+        st.info("Previewing top 5,000 filtered rows for smooth performance. Click below to download all results.")
+    
+    st.dataframe(preview_df)
 
     csv_dl = filtered_df.to_csv(index=False).encode('utf-8-sig')
     st.download_button(
@@ -121,4 +142,4 @@ if df is not None:
         mime="text/csv"
     )
 else:
-    st.error("Data files not found! Ensure part files are uploaded to the repository.")
+    st.error("Data files not found! Ensure part files or .csv.gz files are uploaded to the repository.")
